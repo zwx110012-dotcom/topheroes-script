@@ -1,0 +1,48 @@
+window_title: "Steam Top Heroes"
+window_size: [1600, 900]
+confidence: 0.9
+scales: [0.7, 0.75, 0.8, 0.85, 0.9, 0.95, 1.0, 1.05, 1.1, 1.15, 1.2, 1.25, 1.3]
+dispatches: 3
+continuous: true
+monitor_max_seconds: 30
+monitor_fallback_seconds: 2
+poll_seconds: 0.25
+timeout_seconds: 12
+click_settle_seconds: 0.5
+search_wait_seconds: 2
+max_level_adjustments: 16
+templates:
+  world:
+    path: templates/world.png
+    roi: [0.7, 0.65, 1.0, 1.0]
+  search_icon:
+    path: templates/search_icon.png
+    roi: [0.0, 0.5, 0.2, 0.9]
+  resources:
+    path: templates/resources.png
+    roi: [0.25, 0.3, 0.75, 0.7]
+  red_crystal:
+    path: templates/red_crystal.png
+    roi: [0.25, 0.4, 0.75, 0.8]
+  minus:
+    path: templates/minus.png
+    roi: [0.25, 0.4, 0.75, 0.9]
+  plus:
+    path: templates/plus.png
+    roi: [0.25, 0.4, 0.75, 0.9]
+  level_six:
+    path: templates/level_six.png
+    confidence: 0.96
+  search_button:
+    path: templates/search_button.png
+    roi: [0.25, 0.6, 0.75, 1.0]
+  gather:
+    path: templates/gather.png
+  depart:
+    path: templates/depart.png
+  idle:
+    path: templates/idle.png
+    # Rows render text at different subpixel offsets; smooth only this label.
+    blur_sigma: 1.0
+    confidence: 0.86
+    roi: [0.0, 0.15, 0.2, 0.4]

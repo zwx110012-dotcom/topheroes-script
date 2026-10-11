@@ -1,0 +1,19 @@
+# Copy to workflow.yaml and replace every example template with crops from your game.
+# Coordinates and ROI values are relative to the game window's client area.
+window_title: "Top Heroes"
+confidence: 0.88
+poll_seconds: 0.5
+steps:
+  - name: "Example: open daily tasks"
+    target: "templates/daily_button.png"
+    # roi: [0, 0, 500, 500]
+    timeout_seconds: 15
+    after:
+      template: "templates/daily_page.png"
+      timeout_seconds: 8
+  - name: "Example: claim reward"
+    target: "templates/claim_button.png"
+    timeout_seconds: 15
+    after:
+      template: "templates/claimed_state.png"
+      timeout_seconds: 8
