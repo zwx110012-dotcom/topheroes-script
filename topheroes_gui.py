@@ -13,21 +13,20 @@ import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
-from tkinter import ttk
+from tkinter import ttk, filedialog
 
 import cv2
 import win32con
 import win32gui
 from PIL import Image, ImageTk
 
-from crystal_gather import CrystalGatherer, GameSession, NoIdleQueues, RunStopped, read_gather_config
+from crystal_gather import CrystalGatherer, GameSession, NoIdleQueues, RunStopped, read_gather_config, available_levels
 from top_heroes import WorkflowError, client_box, find_game_window as find_window, game_windows
 
 
 RESOURCE_ROOT = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))
 DATA_ROOT = Path(os.environ.get("LOCALAPPDATA", str(Path.home()))) / "TopHeroesHelper"
-BG, PANEL, FIELD = "#101825", "#192536", "#233247"
-TEXT, MUTED, ACCENT = "#edf3fa", "#9eafc4", "#60dfca"
+from helper_ui import BG, PANEL, FIELD, TEXT, MUTED, ACCENT
 NAMES = {"world": "进入世界", "search_icon": "打开搜索", "resources": "资源采集",
          "red_crystal": "选择红水晶", "minus": "降低等级", "plus": "提高等级",
          "search_button": "搜索据点", "gather": "采集", "depart": "出发", "idle": "空闲队列"}
@@ -49,23 +48,35 @@ class HelperApp:
         self.photo = None
         self.last_frame_time = 0.0
         self.settings = self.load_settings()
+        model_root = Path(sys.executable).parent if getattr(sys, "frozen", False) else RESOURCE_ROOT
+        self.recognition_var = tk.StringVar(value=self.settings.get("recognition", "yolo"))
+        self.model_var = tk.StringVar(value=self.settings.get("yolo_model", str(model_root / "models/topheroes.onnx")))
         DATA_ROOT.mkdir(parents=True, exist_ok=True)
         self.log_path = DATA_ROOT / "logs" / (datetime.now().strftime("%Y%m%d-%H%M%S") + ".log")
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self.title_var = tk.StringVar(value=self.settings.get("title", "Steam Top Heroes"))
-        self.count_var = tk.StringVar(value=str(self.settings.get("dispatches", 3)))
+        self.capacity_var = tk.StringVar(value=str(self.settings.get('queue_capacity',4)))
+        self.count_var = tk.StringVar(value=str(self.settings.get('dispatches',4)
+            if 'queue_capacity' in self.settings else 4))
         self.delay_var = tk.StringVar(value=str(self.settings.get("delay", 5)))
         self.continuous_var = tk.BooleanVar(value=self.settings.get("continuous", True))
+        # Carriage monitoring is opt-in on every launch, including upgrades
+        # from versions that saved chat_invites=True.
+        self.chat_var = tk.BooleanVar(value=False)
+        self.levels=available_levels(RESOURCE_ROOT)
+        saved_level=self.settings.get('target_level',7)
+        self.level_var=tk.StringVar(value=str(saved_level if saved_level in self.levels else 7))
         self.monitor_var = tk.StringVar(value="队伍倒计时：等待识别")
         self.alarm_var = tk.StringVar(value="下一次检查：—")
         self.next_alarm = None
         self.monitor_rows = []
         self.monitor_seen = 0.0
+        self.monitor_paused_at = None
         self.status_var = tk.StringVar(value="等待开始")
         self.detail_var = tk.StringVar(value="启动时恢复游戏画面为1600×900，再识别并采集。")
         self.size_var = tk.StringVar(value="未连接")
         self.idle_var = tk.StringVar(value="—")
-        self.progress_var = tk.StringVar(value="0 / 3")
+        self.progress_var = tk.StringVar(value=f"0 / {self.count_var.get()}")
         self.build_ui()
         self.refresh_windows()
         self.add_log("已就绪：游戏状态只从截图识别，动作使用鼠标点击。")
@@ -92,101 +103,23 @@ class HelperApp:
                          font=("Microsoft YaHei UI", 11, "bold"))
 
     def build_ui(self):
-        root = self.root
-        root.title("Top Heroes · 日常助手")
-        root.geometry("1100x820")
-        root.minsize(980, 790)
-        root.configure(bg=BG)
-        root.iconphoto(True, ImageTk.PhotoImage(Image.open(RESOURCE_ROOT / "templates/world.png")))
-        style = ttk.Style(root)
-        style.theme_use("clam")
-        style.configure("TCombobox", fieldbackground=FIELD, background=FIELD, foreground=TEXT,
-                        arrowcolor=TEXT, padding=7)
-        style.map("TCombobox", fieldbackground=[("readonly", FIELD)], foreground=[("readonly", TEXT)])
-        style.configure("TSpinbox", fieldbackground=FIELD, background=FIELD, foreground=TEXT,
-                        arrowcolor=TEXT, padding=7)
-        style.configure("Horizontal.TProgressbar", background=ACCENT, troughcolor=FIELD, borderwidth=0)
-        root.grid_columnconfigure(1, weight=1)
-        root.grid_rowconfigure(0, weight=1)
+        from helper_ui import build_ui
+        build_ui(self, RESOURCE_ROOT)
 
-        side = tk.Frame(root, bg=PANEL, width=280, padx=22, pady=18)
-        side.grid(row=0, column=0, sticky="nsew", padx=(18, 0), pady=18)
-        side.grid_propagate(False)
-        self.label(side, "TOP HEROES", size=12, color=ACCENT, bold=True).pack(anchor="w")
-        self.label(side, "日常助手", size=25, bold=True).pack(anchor="w", pady=(3, 8))
-        self.label(side, "截图识别 · 鼠标操作", color=MUTED).pack(anchor="w", pady=(0, 12))
-        self.label(side, "任务", color=MUTED).pack(anchor="w")
-        self.label(side, "红水晶采集", size=17, bold=True).pack(anchor="w", pady=(6, 4))
-        self.label(side, "目标等级  6级", color=ACCENT).pack(anchor="w", pady=(0, 12))
-        self.label(side, "游戏窗口", color=MUTED).pack(anchor="w")
-        self.window_combo = ttk.Combobox(side, textvariable=self.title_var, width=22, state="readonly")
-        self.window_combo.pack(fill="x", pady=(6, 6))
-        self.window_combo.bind("<<ComboboxSelected>>", lambda _event: self.refresh_windows())
-        self.refresh_button = self.button(side, "刷新窗口", self.refresh_windows)
-        self.refresh_button.pack(fill="x", pady=(0, 12))
-        self.label(side, "目标在外队伍数 / 单轮派队数", color=MUTED).pack(anchor="w")
-        self.count_spin = ttk.Spinbox(side, from_=1, to=3, textvariable=self.count_var, width=6, state="readonly")
-        self.count_spin.pack(fill="x", pady=(6, 10))
-        self.continuous_check = tk.Checkbutton(side, text="持续采集 · 空闲后自动补队",
-            variable=self.continuous_var, bg=PANEL, fg=TEXT, selectcolor=FIELD,
-            activebackground=PANEL, activeforeground=TEXT, font=("Microsoft YaHei UI", 10))
-        self.continuous_check.pack(anchor="w", pady=(0, 10))
-        self.label(side, "启动倒计时（秒）", color=MUTED).pack(anchor="w")
-        self.delay_spin = ttk.Spinbox(side, from_=2, to=15, textvariable=self.delay_var, width=6, state="readonly")
-        self.delay_spin.pack(fill="x", pady=(6, 12))
-        self.start_button = self.button(side, "启动采集", lambda: self.start("run"), True)
-        self.start_button.pack(fill="x", pady=(0, 8))
-        self.preview_button = self.button(side, "预览识别 · 不点击", lambda: self.start("preview"))
-        self.preview_button.pack(fill="x", pady=(0, 8))
-        self.stop_button = self.button(side, "停止  F8", self.stop)
-        self.stop_button.pack(fill="x")
-        self.stop_button.configure(state="disabled")
-        self.hotkey_label = self.label(side, "F8 可随时停止\n切换离开游戏会停止", color=MUTED, size=9)
-        self.hotkey_label.pack(anchor="w", pady=6)
-
-        main = tk.Frame(root, bg=BG, padx=22, pady=24)
-        main.grid(row=0, column=1, sticky="nsew", padx=(0, 4), pady=18)
-        main.grid_columnconfigure(0, weight=1)
-        main.grid_rowconfigure(3, weight=1)
-        self.label(main, variable=self.status_var, size=23, bg=BG, bold=True).grid(row=0, column=0, sticky="w")
-        self.label(main, variable=self.detail_var, color=MUTED, bg=BG, size=10).grid(row=1, column=0, sticky="w", pady=(7, 20))
-        cards = tk.Frame(main, bg=BG)
-        cards.grid(row=2, column=0, sticky="ew", pady=(0, 15))
-        for index, (name, variable) in enumerate([("窗口尺寸", self.size_var), ("空闲队列", self.idle_var), ("派队记录", self.progress_var)]):
-            cards.grid_columnconfigure(index, weight=1, uniform="cards")
-            card = tk.Frame(cards, bg=PANEL, padx=14, pady=12)
-            card.grid(row=0, column=index, sticky="ew", padx=(0, 8 if index < 2 else 0))
-            self.label(card, name, color=MUTED, size=10).pack(anchor="w")
-            self.label(card, variable=variable, size=17, bold=True).pack(anchor="w", pady=(3, 0))
-        self.canvas = tk.Canvas(main, bg="#0b111c", highlightthickness=0, height=350)
-        self.canvas.grid(row=3, column=0, sticky="nsew")
-        self.canvas.bind("<Configure>", lambda _event: self.redraw_image())
-        self.canvas.create_text(300, 170, text="预览游戏画面与识别位置", fill=MUTED, font=("Microsoft YaHei UI", 13), tags="placeholder")
-        self.progress = ttk.Progressbar(main, maximum=3, mode="determinate")
-        self.progress.grid(row=4, column=0, sticky="ew", pady=(12, 15))
-        timers = tk.Frame(main, bg=BG)
-        timers.grid(row=5, column=0, sticky="ew", pady=(0, 7))
-        self.label(timers, variable=self.monitor_var, size=10, bg=BG).pack(anchor="w")
-        self.label(timers, variable=self.alarm_var, size=10, color=ACCENT, bg=BG).pack(anchor="w", pady=(3, 0))
-        log_frame = tk.Frame(main, bg=PANEL)
-        log_frame.grid(row=6, column=0, sticky="ew")
-        self.log_text = tk.Text(log_frame, height=8, bg=PANEL, fg=TEXT, insertbackground=TEXT,
-                                font=("Microsoft YaHei UI", 10), borderwidth=0, padx=12, pady=8, wrap="word", state="disabled")
-        scrollbar = ttk.Scrollbar(log_frame, command=self.log_text.yview)
-        self.log_text.configure(yscrollcommand=scrollbar.set)
-        self.log_text.pack(side="left", fill="both", expand=True)
-        scrollbar.pack(side="right", fill="y")
-        footer = tk.Frame(main, bg=BG)
-        footer.grid(row=7, column=0, sticky="ew", pady=(10, 0))
-        self.label(footer, "游戏画面1600×900 · 尺寸变化自动恢复 · F8停止", color=MUTED, bg=BG, size=9).pack(side="left")
-        tk.Button(footer, text="打开日志", command=lambda: os.startfile(self.log_path.parent),
-                  fg=ACCENT, bg=BG, activebackground=BG, relief="flat", cursor="hand2").pack(side="right")
+    def open_logs(self):
+        os.startfile(self.log_path.parent)
 
     def add_log(self, message: str):
         line = f"[{time.strftime('%H:%M:%S')}] {message}"
         self.lines.append(line)
         self.log_text.configure(state="normal")
-        self.log_text.insert("end", line + "\n")
+        tag = 'stop' if '停止' in message else 'warning' if any(word in message for word in ('失败', '超时', '错误', '重试')) else ''
+        self.log_text.insert("end", line + "\n", tag)
+        self.last_log_var.set(line)
+        # Keep the visible log bounded; the complete log stays on disk.
+        if len(self.lines) > 1500:
+            self.lines = self.lines[-1000:]
+            self.log_text.delete('1.0', '501.0')
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
         try:
@@ -214,12 +147,74 @@ class HelperApp:
 
     def set_busy(self, busy: bool):
         self.busy = busy
-        for button in (self.start_button, self.preview_button, self.refresh_button):
+        if busy:
+            self.monitor_paused_at = None
+        for button in (self.start_button, self.preview_button, self.refresh_button,
+                       self.capture_button, self.image_button, self.model_button):
             button.configure(state="disabled" if busy else "normal")
         self.stop_button.configure(state="normal" if busy else "disabled")
-        for widget in (self.window_combo, self.count_spin, self.delay_spin):
+        for widget in (self.window_combo, self.capacity_spin, self.count_spin, self.delay_spin, self.recognition_combo,self.level_combo):
             widget.configure(state="disabled" if busy else "readonly")
         self.continuous_check.configure(state="disabled" if busy else "normal")
+        self.chat_check.configure(state='disabled' if busy else 'normal')
+        self.model_entry.configure(state="disabled" if busy else "normal")
+
+    def choose_model(self):
+        path = filedialog.askopenfilename(title="选择游戏检测 ONNX 模型", filetypes=[("ONNX 模型", "*.onnx")])
+        if path:
+            self.model_var.set(path)
+            self.recognition_var.set("yolo")
+
+    def open_captures(self):
+        folder = DATA_ROOT / "captures"
+        folder.mkdir(parents=True, exist_ok=True)
+        os.startfile(folder)
+
+    def recognition_config(self, config: dict):
+        config.update(recognition=self.recognition_var.get(), yolo_model=self.model_var.get().strip(),
+                      yolo_confidence=0.65)
+        if config["recognition"] not in ("yolo", "template"):
+            raise WorkflowError("请选择 yolo 或 template")
+        if config["recognition"] == "yolo" and not Path(config["yolo_model"]).is_file():
+            raise WorkflowError("YOLO 模型待训练；请先保存训练截图，或选择已训练的 ONNX 模型")
+
+    def preview_image(self):
+        if self.busy:
+            return
+        path = filedialog.askopenfilename(title="选择游戏截图", filetypes=[("游戏截图", "*.png *.jpg *.jpeg")])
+        if not path:
+            return
+        try:
+            config = read_gather_config(RESOURCE_ROOT / "gather_crystal.yaml")
+            self.recognition_config(config)
+            config['queue_capacity'] = int(self.capacity_var.get())
+            config['target_level']=int(self.level_var.get())
+        except Exception as exc:
+            self.status_var.set("无法预览")
+            self.detail_var.set(str(exc))
+            return
+        self.stop_event.clear()
+        self.active_mode = "preview"
+        self.set_busy(True)
+        self.status_var.set("正在识别截图")
+        def work():
+            try:
+                from top_heroes import load_template
+                frame = load_template(Path(path))
+                class ImageSession:
+                    def capture(self):
+                        return frame
+                    def click(self, point):
+                        raise WorkflowError("截图预览不能点击")
+                bot = CrystalGatherer(config, RESOURCE_ROOT, ImageSession(), self.stop_event,
+                    lambda msg: self.events.put(("log", msg)),
+                    lambda kind, data: self.events.put((kind, data)))
+                bot.preview()
+                self.events.put(("done", ("success", "截图预览完成；红十字为预计点击位置，未操作游戏")))
+            except Exception as exc:
+                self.events.put(("done", ("error", str(exc))))
+        self.worker = threading.Thread(target=work, daemon=True)
+        self.worker.start()
 
     def start(self, mode: str):
         if self.busy:
@@ -227,13 +222,30 @@ class HelperApp:
         try:
             config = read_gather_config(RESOURCE_ROOT / "gather_crystal.yaml")
             title, count, delay = self.title_var.get().strip(), int(self.count_var.get()), int(self.delay_var.get())
-            if not title or not 1 <= count <= 3 or not 2 <= delay <= 15:
-                raise ValueError("请选择1到3队，以及2到15秒的倒计时")
+            capacity = int(self.capacity_var.get())
+            if not title or capacity not in (3,4) or not 1 <= count <= capacity or not 2 <= delay <= 15:
+                raise ValueError("请选择3或4个队列、1到队列总数的目标，以及2到15秒倒计时")
             find_window(title)
             continuous = self.continuous_var.get()
-            config.update(window_title=title, dispatches=count, continuous=continuous)
+            config.update(window_title=title, dispatches=count, continuous=continuous,queue_capacity=capacity)
+            level=int(self.level_var.get())
+            if level not in self.levels:raise WorkflowError('请选择有效矿点等级')
+            config['target_level']=level
+            config['chat_invites']=self.chat_var.get()
+            if mode=='run' and continuous and config['chat_invites'] and capacity==4:
+                from chat_invites import ChatImages
+                ChatImages(RESOURCE_ROOT)
+            if mode != "capture":
+                self.recognition_config(config)
+            if mode == "run" and config.get("recognition") == "yolo":
+                from yolo_detector import require_verified_model
+                require_verified_model(Path(config["yolo_model"]),capacity=capacity)
             (DATA_ROOT / "settings.json").write_text(json.dumps({"title": title, "dispatches": count,
-                "delay": delay, "continuous": continuous}, ensure_ascii=False), encoding="utf-8")
+                "queue_capacity":capacity,
+                "target_level":level,
+                "chat_invites":config['chat_invites'],
+                "delay": delay, "continuous": continuous, "recognition": self.recognition_var.get(),
+                "yolo_model": self.model_var.get()}, ensure_ascii=False), encoding="utf-8")
         except Exception as exc:
             self.status_var.set("无法开始")
             self.detail_var.set(str(exc))
@@ -248,7 +260,7 @@ class HelperApp:
         self.next_alarm, self.monitor_rows = None, []
         self.progress.configure(maximum=count, value=0)
         self.idle_var.set("—")
-        self.add_log("开始采集" if mode == "run" else "开始识别预览，不会点击")
+        self.add_log(f"开始采集：{level}级红水晶" if mode == "run" else "保存训练截图" if mode == "capture" else "开始识别预览，不会点击")
         self.count_down(delay, mode, config)
 
     def count_down(self, remaining: int, mode: str, config: dict):
@@ -289,11 +301,24 @@ class HelperApp:
             session = GameSession(config["window_title"], self.frame_event,
                                   target_size=tuple(config["window_size"]), stop_event=self.stop_event,
                                   logger=lambda message: self.events.put(("log", message)))
+            if mode == "capture":
+                frame = session.capture()
+                folder = DATA_ROOT / "captures"
+                folder.mkdir(parents=True, exist_ok=True)
+                path = folder / f"game-{datetime.now():%Y%m%d-%H%M%S}-{time.time_ns()}.png"
+                ok, buffer = cv2.imencode(".png", frame)
+                if not ok:
+                    raise WorkflowError("截图编码失败")
+                buffer.tofile(str(path))
+                self.events.put(("frame", frame))
+                self.events.put(("done", ("success", f"训练截图已保存：{path}")))
+                return
             bot = CrystalGatherer(config, RESOURCE_ROOT, session, self.stop_event,
                                   lambda message: self.events.put(("log", message)),
                                   lambda kind, data: self.events.put((kind, data)))
             self.events.put(("size", session.size))
             if mode == "run":
+                bot.require_ready()
                 bot.run_continuous() if config["continuous"] else bot.run()
                 result = f"本次完成，已确认派出 {bot.completed} 队。"
             else:
@@ -349,6 +374,7 @@ class HelperApp:
         if result == "error" and self.stop_event.is_set():
             self.add_log(message)
             result, message = "stopped", "已按请求停止，不再继续点击。"
+        self.monitor_paused_at = time.monotonic()
         self.set_busy(False)
         statuses = {"success": "预览完成" if self.active_mode == "preview" else "本次完成",
                     "stopped": "已停止", "limited": "没有空闲队列", "error": "已停止 · 请检查"}
@@ -365,6 +391,10 @@ class HelperApp:
 
     def redraw_image(self):
         if not hasattr(self, "last_image"):
+            self.canvas.delete('all')
+            self.canvas.create_text(self.canvas.winfo_width() // 2, self.canvas.winfo_height() // 2,
+                text='等待游戏画面\n启动后显示识别结果，也可打开截图预览', fill=MUTED,
+                font=('Microsoft YaHei UI', 11), justify='center', tags='placeholder')
             return
         image = self.last_image.copy()
         image.thumbnail((max(20, self.canvas.winfo_width()), max(20, self.canvas.winfo_height())))
@@ -383,7 +413,7 @@ class HelperApp:
                 elif kind == "size":
                     self.size_var.set(f"{data[0]} × {data[1]}")
                 elif kind == "queue":
-                    self.idle_var.set(f"{data['idle']} / 3")
+                    self.idle_var.set(f"{data['idle']} / {data.get('capacity',self.capacity_var.get())}")
                 elif kind == "progress":
                     self.progress_var.set(f"{data['completed']} / {data['total']}")
                     self.progress.configure(value=data["completed"])
@@ -392,25 +422,40 @@ class HelperApp:
                     self.progress.configure(maximum=data["target"], value=min(data["busy"], data["target"]))
                 elif kind == "monitor":
                     self.monitor_rows = data["rows"]
-                    self.monitor_seen = time.monotonic()
+                    now=time.monotonic()
+                    self.monitor_seen = data.get('observed_at',now)
                     delay = data["delay"]
-                    self.next_alarm = self.monitor_seen + delay if delay is not None else None
+                    self.next_alarm = data.get('deadline',now+delay if delay is not None else None)
                     if self.busy and self.active_mode == "run":
                         self.status_var.set("正在补队" if delay == 0 else "持续采集 · 监测中")
                         self.detail_var.set("采集结束后继续识别返程；只有空闲才派队。F8 停止。")
                 elif kind == "step":
                     self.status_var.set(NAMES.get(data["name"], data["name"]))
                     self.detail_var.set(f"识别置信度 {data['score']:.3f} · F8 停止")
+                elif kind=='chat_watch':
+                    self.status_var.set('四队采矿 · 聊天邀请监测')
+                    self.detail_var.set(f"公会商队：已确认加入 {data['joined']} 次；F8停止。")
+                elif kind=='chat_alarm':
+                    self.next_alarm=data['deadline']
+                    self.status_var.set('四队采矿 · 实时监测商队')
+                    self.detail_var.set(f"按{data['queue']}队最短采集倒计时设闹钟；到时退出、等待返程并补队。F8停止。")
                 elif kind == "search_retry":
                     self.next_alarm = time.monotonic() + data["delay"]
                     self.status_var.set("采集点搜索重试")
                     self.detail_var.set("未出现采集按钮，稍后重新检查并搜索。F8 停止。")
+                elif kind == "queue_wait":
+                    self.monitor_rows = []
+                    self.idle_var.set("—")
+                    self.next_alarm = time.monotonic() + data["delay"]
+                    self.status_var.set("队伍栏待确认 · 等待复查")
+                    self.detail_var.set("暂停点击，重新确认队伍状态后继续。F8 停止。")
                 elif kind == "preview":
                     frame = data["frame"].copy()
                     for name, matches in data["matches"].items():
                         for match in matches:
                             cv2.rectangle(frame, (match.x, match.y), (match.x + match.width, match.y + match.height), (135, 230, 95), 2)
                             cv2.putText(frame, f"{name} {match.score:.2f}", (match.x, max(14, match.y - 4)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, (135, 230, 95), 1)
+                            cv2.drawMarker(frame, match.center, (40, 40, 255), cv2.MARKER_CROSS, 18, 2)
                     self.draw_frame(frame)
                 elif kind == "diagnostic":
                     frame = data["frame"].copy()
@@ -440,7 +485,7 @@ class HelperApp:
         except queue.Empty:
             pass
         if self.monitor_rows:
-            elapsed = int(time.monotonic() - self.monitor_seen) if self.busy else 0
+            elapsed = self.queue_elapsed()
             labels = []
             from queue_monitor import STATE_NAMES
             for row in self.monitor_rows:
@@ -450,6 +495,7 @@ class HelperApp:
                     label += f" {seconds//3600:02}:{seconds//60%60:02}:{seconds%60:02}"
                 labels.append(label)
             self.monitor_var.set("  |  ".join(labels))
+        self.refresh_queue_cards()
         if self.next_alarm is not None:
             remaining = max(0, self.next_alarm - time.monotonic())
             alarm_time = time.strftime("%H:%M:%S", time.localtime(time.time() + remaining))
@@ -458,6 +504,29 @@ class HelperApp:
             self.alarm_var.set("下一次检查：未运行")
         if not self.closing.is_set():
             self.root.after(100, self.drain_events)
+
+    def queue_elapsed(self):
+        now = time.monotonic() if self.busy else self.monitor_paused_at or self.monitor_seen
+        return max(0, int(now - self.monitor_seen))
+
+    def refresh_queue_cards(self):
+        from queue_monitor import STATE_NAMES
+        rows = {row.number: row for row in self.monitor_rows}
+        elapsed = self.queue_elapsed()
+        colors = {'mining': ACCENT, 'returning': '#f3bd76', 'idle': '#9cbcff'}
+        for number, (label, timer) in enumerate(zip(self.queue_labels, self.queue_times), 1):
+            row = rows.get(number)
+            if number > int(self.capacity_var.get()):
+                label.configure(text=f'{number} 队 · 未启用', fg=MUTED)
+                timer.configure(text='—', fg=MUTED)
+            elif row is None:
+                label.configure(text=f'{number} 队 · 待识别', fg=MUTED)
+                timer.configure(text='—', fg=MUTED)
+            else:
+                label.configure(text=f'{number} 队 · {STATE_NAMES[row.state]}', fg=colors.get(row.state, MUTED))
+                seconds = max(0, row.seconds - elapsed) if row.seconds is not None else None
+                value = f'{seconds//3600:02}:{seconds//60%60:02}:{seconds%60:02}' if seconds is not None else '—'
+                timer.configure(text=value, fg=TEXT)
 
     def close(self):
         self.closing.set()
@@ -480,12 +549,57 @@ class HelperApp:
 def main():
     root = tk.Tk()
     app = HelperApp(root)
+    if "--yolo-smoke-test" in sys.argv:
+        index = sys.argv.index("--yolo-smoke-test")
+        model, source, output = map(Path, sys.argv[index + 1:index + 4])
+        def yolo_smoke():
+            try:
+                import numpy as np
+                from yolo_detector import YoloDetector
+                frame = cv2.imdecode(np.fromfile(str(source), np.uint8), cv2.IMREAD_COLOR)
+                if frame is None:
+                    raise WorkflowError("测试截图无法读取")
+                detector = YoloDetector(model, 0.25)
+                detections = detector.detect(frame)
+                visible = {}
+                for d in detections:
+                    visible.setdefault(d.name, []).append(d.match)
+                app.events.put(("preview", {"frame": frame, "matches": visible}))
+                app.status_var.set("YOLO 截图验证完成")
+                app.detail_var.set("绿框：检测目标；红十字：客户区点击点。当前模型仅可预览。")
+                app.recognition_var.set("yolo")
+                app.model_var.set(str(model))
+                output.parent.mkdir(parents=True, exist_ok=True)
+                output.write_text(json.dumps({"ok": True, "frozen": bool(getattr(sys, "frozen", False)),
+                    "providers": detector.session.get_providers(), "classes": detector.names,
+                    "boxes": [{"name": d.name, "score": d.match.score,
+                               "center": d.match.center} for d in detections], "clicked": False},
+                    ensure_ascii=False, indent=2), encoding="utf-8")
+                root.after(60000 if "--hold-open" in sys.argv else 1000, app.close)
+            except Exception as exc:
+                output.write_text(json.dumps({"ok": False, "error": str(exc)}), encoding="utf-8")
+                app.status_var.set("YOLO 验证失败")
+                app.detail_var.set(str(exc))
+                root.after(1000, app.close)
+        root.after(800, yolo_smoke)
     if "--smoke-test" in sys.argv:
         output = Path(sys.argv[sys.argv.index("--smoke-test") + 1])
         def smoke():
             try:
                 config = read_gather_config(RESOURCE_ROOT / "gather_crystal.yaml")
+                from ui_smoke import check_layout
+                layout_checks = check_layout(app)
                 assert app.hotkey_ready.is_set(), "F8 hotkey registration failed"
+                root.update_idletasks()
+                assert app.level_combo.winfo_viewable(), "Level selector is not visible"
+                assert not app.chat_var.get(), "Carriage monitoring must start unchecked"
+                assert app.chat_check.cget('text')=='马车监测', "Carriage checkbox label is wrong"
+                app.chat_check.invoke()
+                assert app.chat_var.get(), "Carriage monitoring cannot be enabled"
+                app.chat_check.invoke()
+                assert not app.chat_var.get(), "Carriage monitoring cannot be disabled"
+                assert (app.stop_button.winfo_rooty()-root.winfo_rooty()+app.stop_button.winfo_height()
+                        <=root.winfo_height()), "Stop button is outside the window"
                 app.set_busy(True)
                 app.stop_event.clear()
                 app.count_down(5, "preview", config)
@@ -504,7 +618,14 @@ def main():
                                               "cancel_before_click": True,
                                               "stop_focus_race": True,
                                               "hotkey_registered": True,
-                                              "hotkey_stop": True}), encoding="utf-8")
+                                              "hotkey_stop": True,
+                                              "target_level":int(app.level_var.get()),
+                                              "available_levels":app.levels,
+                                              "level_selector_visible":True,
+                                              "stop_button_visible":True,
+                                              "carriage_monitor_default":False,
+                                              "carriage_monitor_toggle":True,
+                                              "layout":layout_checks}), encoding="utf-8")
             finally:
                 app.close()
         root.after(800, smoke)

@@ -1,0 +1,68 @@
+{
+  "stage": "verified",
+  "assets": {
+    "trade_label": {
+      "file": "trade_label.png",
+      "sha256": "352716dbe046204580ed10079f6b18192c0f676fca864a1b373a9bf3138182a2",
+      "confidence": 0.94,
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        1
+      ]
+    },
+    "carriage_building": {
+      "file": "carriage_building.png",
+      "sha256": "0253b4c5c24480cc7115ca256a853f76ef01d9574c75e13c8e9224dbc5d5b01e",
+      "confidence": 0.92,
+      "scales": [
+        0.85,
+        0.9,
+        0.95,
+        1,
+        1.05,
+        1.1,
+        1.15
+      ]
+    },
+    "carriage_menu": {
+      "file": "carriage_menu.png",
+      "sha256": "661052c4fe12486aae990ae1b4b8e6884260a1a2fbf37f1b50c1c904a93c71e3",
+      "confidence": 0.94
+    },
+    "return_city": {
+      "file": "return_city.png",
+      "sha256": "da45de22340cef79e2a0739639cf38e11627e2ebb2aa47abf91857f47df50556",
+      "confidence": 0.94,
+      "roi": [
+        0.9,
+        0.85,
+        1,
+        1
+      ]
+    },
+    "my_tab": {
+      "file": "my_tab.png",
+      "sha256": "f137f634326664d2af524192725cefc5227fa15a34023becbe016c4812f445ab",
+      "confidence": 0.94,
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        1
+      ]
+    },
+    "back": {
+      "file": "back.png",
+      "sha256": "e491f00d8db5a21af75e0f2baf75819f61036f3b744883567783f10ddd969036",
+      "confidence": 0.94,
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        1
+      ]
+    }
+  }
+}

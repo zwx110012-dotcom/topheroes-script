@@ -1,6 +1,16 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-yolo/
+datasets/
+models/*.pt
+models/*.onnx
+models/*.json
+models/*.sha256
+models/before-four-queues/
+runs/
+yolo-output/
+weights/
 captures/
 debug/
 build/

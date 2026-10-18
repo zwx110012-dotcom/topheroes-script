@@ -1,0 +1,180 @@
+{
+  "stage": "verified",
+  "scales": [
+    1
+  ],
+  "assets": {
+    "chat_header": {
+      "file": "chat_header.png",
+      "sha256": "07a35aa28ae0f93c560310f96da58b1cfda752238ca0976d46b205cf365e1a89",
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        0.86
+      ],
+      "confidence": 0.94
+    },
+    "alliance_active": {
+      "file": "alliance_active.png",
+      "sha256": "9da7c3979bf6560a3ba1ca439de0ded9877d23ae40c516e652c5bb6ab65363c8",
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        0.86
+      ],
+      "confidence": 0.94
+    },
+    "alliance_tab": {
+      "file": "alliance_tab.png",
+      "sha256": "4dd0a05e19b6ec8be86fa2e1af15267b660cd2c9fcb13ed6212a6f1af4215f03",
+      "roi": [
+        0.33,
+        0,
+        0.67,
+        0.86
+      ],
+      "confidence": 0.94
+    },
+    "chat_close": {
+      "file": "chat_close.png",
+      "sha256": "e491f00d8db5a21af75e0f2baf75819f61036f3b744883567783f10ddd969036",
+      "roi": [
+        0.33,
+        0.9,
+        0.4,
+        1
+      ],
+      "confidence": 0.94
+    },
+    "chat_open": {
+      "file": "chat_open.png",
+      "sha256": "2d35b7aa188565189d1d2651b5ad4219a39fccd55d2a347439234f7a24b6949e",
+      "roi": [
+        0,
+        0.95,
+        0.15,
+        1
+      ],
+      "confidence": 0.86,
+      "click_offset": [
+        120,
+        -48
+      ]
+    },
+    "new_messages": {
+      "file": "new_messages.png",
+      "sha256": "5c001c4cf2a04bfca323bf1a152c382f98bd2f7f0bffddeeef02b6c169b0fe43",
+      "roi": [
+        0.57,
+        0.82,
+        0.66,
+        0.93
+      ],
+      "confidence": 0.94
+    },
+    "invite_header": {
+      "file": "invite_header.png",
+      "sha256": "0510f15da84bdfc2e1e45e4e532e9f25cb8ef7c638fc4b4470f09cac818abed7",
+      "roi": [
+        0.35,
+        0.2,
+        0.65,
+        0.93
+      ],
+      "confidence": 0.94,
+      "word_pixels": false
+    },
+    "merchant": {
+      "file": "merchant.png",
+      "sha256": "8f5552bd455e9cec8dfcd524932195d90c5dc1f889ef35f2fb15fb1dc8f70632",
+      "roi": [
+        0.35,
+        0.2,
+        0.65,
+        0.93
+      ],
+      "confidence": 0.94,
+      "word_pixels": false
+    },
+    "join": {
+      "file": "join.png",
+      "sha256": "edaebb4aabb439fd68b58b2ac6c18252c8658322d2d61565847c9df049f55abf",
+      "roi": [
+        0.35,
+        0.2,
+        0.65,
+        0.93
+      ],
+      "confidence": 0.94
+    },
+    "joined": {
+      "file": "joined.png",
+      "sha256": "d66eead15a49b51494320fe4144ab7418b9f2e0dc983d1f60d7b7d980687a57c",
+      "roi": [
+        0.35,
+        0.2,
+        0.65,
+        0.93
+      ],
+      "confidence": 0.94
+    },
+    "alliance_chat": {
+      "file": "alliance_chat.png",
+      "sha256": "e1d4c9d937bc1de9e17497ee8372c4b053ff7ed637a5e64d15a9bf90cfb3b3e1",
+      "roi": [
+        0.34,
+        0.14,
+        0.51,
+        0.2
+      ],
+      "confidence": 0.94
+    },
+    "alliance_chat_tab": {
+      "file": "alliance_chat_tab.png",
+      "sha256": "2509ed7a4643b3b6e73db3eca62e09e13dc8cfab6daf2b78f22ace97c12710eb",
+      "roi": [
+        0.34,
+        0.14,
+        0.51,
+        0.2
+      ],
+      "confidence": 0.9
+    },
+    "new_messages_top": {
+      "file": "new_messages_top.png",
+      "sha256": "64f830e1d0b65fa5de1375335acd76990437d768b7d0b1183ca43466d8a5c3ce",
+      "roi": [
+        0.57,
+        0.2,
+        0.66,
+        0.3
+      ],
+      "confidence": 0.94
+    },
+    "new_messages_bottom": {
+      "file": "new_messages_bottom.png",
+      "sha256": "c57fc97f3a2806e4e1e3cb2c1fca55169b8069892420e146350f4278869ccc1c",
+      "roi": [
+        0.59,
+        0.81,
+        0.65,
+        0.91
+      ],
+      "confidence": 0.94
+    }
+  },
+  "card_layout": {
+    "type_dx_min": 200,
+    "type_dx_max": 260,
+    "left_pad": 8,
+    "right_pad": 6,
+    "top_pad": 6,
+    "height": 242,
+    "button_min_y": 174,
+    "identity_end_y": 155
+  },
+  "note": "Actionable green join button verified on two user screenshots; live join result not yet verified.",
+  "live_join_verified": false
+}

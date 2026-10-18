@@ -108,7 +108,11 @@ def next_check_seconds(rows: list[QueueRow], maximum: float = 30,
 
 
 class QueueReader:
-    def __init__(self, base: Path, idle_template: np.ndarray):
+    def __init__(self, base: Path, idle_template: np.ndarray, detector=None, capacity: int = 3):
+        if capacity not in (3,4):
+            raise WorkflowError('队伍栏总数只能是3或4')
+        self.capacity = capacity
+        self.detector = detector
         self.header = load_template(base / "templates/queue_header.png")
         self.icons = {name: [load_template(p) for p in sorted(
             (base / "templates").glob(f"queue_{name}*.png"))]
@@ -117,15 +121,18 @@ class QueueReader:
         self.fast_forward = load_template(base / "templates/queue_fast_forward.png")
         self.timer = TimerReader(base / "templates/timer_digits.npz")
 
-    def read(self, frame: np.ndarray) -> list[QueueRow] | None:
+    def read(self, frame: np.ndarray, header_roi=None) -> list[QueueRow] | None:
+        if self.detector:
+            return self.read_yolo(frame)
         # Imported here to keep the reusable matcher and gatherer independent.
         from crystal_gather import find_matches
-        headers = find_matches(frame, self.header, [1], 0.9, [0, 0.12, 0.14, 0.24], 0.5)
+        headers = find_matches(frame, self.header, [1], 0.9,
+                               header_roi or [0, 0.12, 0.14, 0.24], 0.5)
         if len(headers) != 1:
             return None
         header = headers[0]
         rows = []
-        for index in range(3):
+        for index in range(self.capacity):
             x, y = header.x + 34, header.y + 30 + 36 * index
             label = frame[y:y + 25, x:x + 70]
             if label.shape[:2] != (25, 70):
@@ -163,5 +170,70 @@ class QueueReader:
             else:
                 rows.append(QueueRow(index + 1, state))
         if all(r.state == "unknown" for r in rows):
-            return None  # Folded/occluded list is never interpreted as three free queues.
+            return None  # Folded/occluded list is never interpreted as free queues.
+        return rows
+
+    def read_yolo(self, frame: np.ndarray) -> list[QueueRow] | None:
+        detections = self.detector.detect(frame, [0, 0.12, 0.2, 0.45])
+        headers = [d.match for d in detections if d.name == "queue_header"]
+        if not headers:
+            # The translucent heading can overlap a bright map sprite. Verify
+            # its fixed text at original resolution, as with level/time glyphs.
+            # This confirms only the heading; all configured row anchors are still
+            # required from YOLO before interpreting any team as idle.
+            from crystal_gather import find_matches
+            headers = find_matches(frame, self.header, [1], 0.9,
+                                   [0, 0.12, 0.14, 0.24], 0.5)
+        if len(headers) != 1:
+            return None
+        # Detect actual row regions; an absent/hidden row is unknown, never idle.
+        anchors = sorted([d for d in detections if d.name in ("idle", "timer_region")],
+                         key=lambda d: d.match.center[1])
+        capacity = getattr(self,'capacity',3)
+        if len(anchors) != capacity:
+            return None
+        centers = [d.match.center for d in anchors]
+        gaps = [centers[i+1][1] - centers[i][1] for i in range(capacity-1)]
+        header = headers[0]
+        if (not 24 <= centers[0][1] - header.center[1] <= 52 or
+                not all(24 <= gap <= 48 for gap in gaps) or max(gaps)-min(gaps) > 10 or
+                max(x for x,_ in centers)-min(x for x,_ in centers) > 25 or
+                not all(header.x+20 <= x <= header.x+135 for x,_ in centers)):
+            return None  # All row detections must form the actual queue column.
+        rows = []
+        for index, anchor in enumerate(anchors):
+            m = anchor.match
+            if index and m.y <= anchors[index-1].match.y + anchors[index-1].match.height:
+                return None
+            # Assign badges to non-overlapping row bands; a tall timer detection
+            # must not borrow the returning badge from the neighboring row.
+            center_y = m.center[1]
+            low = ((anchors[index-1].match.center[1] + center_y) / 2 if index else
+                   center_y - (anchors[1].match.center[1] - center_y) / 2)
+            high = ((anchors[index+1].match.center[1] + center_y) / 2 if index < capacity-1 else
+                    center_y + (center_y - anchors[index-1].match.center[1]) / 2)
+            near = [d.name for d in detections if
+                    low <= d.match.center[1] < high and
+                    ((d.name in ("queue_mining", "queue_returning") and d.match.center[0] < m.x) or
+                     (d.name == "queue_fast_forward" and d.match.center[0] > m.center[0]))]
+            if anchor.name == "idle":
+                # Arrival can briefly resemble an idle label while a busy badge
+                # is still visible. Conflicting pixels never authorize refill.
+                if any(name in near for name in ("queue_mining", "queue_returning", "queue_fast_forward")):
+                    return None
+                rows.append(QueueRow(index + 1, "idle"))
+                continue
+            state = ("returning" if "queue_returning" in near else
+                     "outbound" if "queue_mining" in near and "queue_fast_forward" in near else
+                     "mining" if "queue_mining" in near else "busy")
+            label = frame[m.y:m.y+m.height,m.x:m.x+m.width]
+            timer = self.timer.read(label)
+            if timer is None:
+                # A small fallback can recover a clipped edge. Prefer the tight box:
+                # the translucent bar may reveal white map pixels outside the text.
+                expanded = frame[max(0,m.y-2):min(frame.shape[0],m.y+m.height+2),
+                                 max(0,m.x-2):min(frame.shape[1],m.x+m.width+2)]
+                timer = self.timer.read(expanded)
+            rows.append(QueueRow(index + 1, state, timer[0] if timer else None,
+                                 timer[1] if timer else None))
         return rows

@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import native_runtime  # Must precede native CV/ONNX imports on old Anaconda runtimes.
 import cv2
 import numpy as np
 import win32con
@@ -19,7 +20,8 @@ import yaml
 from PIL import ImageGrab
 
 try:
-    ctypes.windll.user32.SetProcessDPIAware()
+    if not ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+        ctypes.windll.user32.SetProcessDPIAware()
 except (AttributeError, OSError):
     pass
 
