@@ -304,7 +304,7 @@ class CrystalGatherer:
     def ensure_world(self, reset=False):
         from visual_navigation import VisualNavigator
         if not hasattr(self,'navigator'):self.navigator=VisualNavigator(self)
-        self.navigator.ensure_world(reset=reset)
+        return self.navigator.ensure_world(reset=reset)
 
     def expand_collapsed_queues(self):
         from visual_navigation import VisualNavigator
@@ -644,8 +644,11 @@ class CrystalGatherer:
                 if queue_failures>=3:
                     if queue_resets>=3:raise QueueUnavailable('队伍栏已恢复3次仍无法确认，请查看诊断截图') from exc
                     self.log('连续三次无法读取队伍栏，尝试回城并重新进入世界')
-                    self.ensure_world(reset=True)
+                    if self.ensure_world(reset=True) is not True:
+                        from visual_navigation import PageUnavailable
+                        raise PageUnavailable('未确认完成回城和重新进入世界，不计为队伍栏恢复')
                     queue_resets+=1
+                    self.log(f'已确认回城并重新进入世界；第{queue_resets}/3次队伍栏重置完成')
                     queue_failures=0
                 self.wait_for_queue_retry(exc)
                 continue

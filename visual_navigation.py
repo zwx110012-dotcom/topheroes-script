@@ -23,6 +23,7 @@ class VisualNavigator:
         self.assets={}
         for name,path,roi in (
             ('return_city','carriage/return_city.png',[.9,.85,1,1]),
+            ('return_city_1600','navigation/return_city_1600.png',[.94,.90,1,1]),
             ('chat','chat/chat_header.png',[.33,0,.67,.86]),
             ('back','chat/chat_close.png',[.33,.9,.4,1]),
             ('carriage','carriage/trade_label.png',[.33,0,.67,.15]),
@@ -37,6 +38,11 @@ class VisualNavigator:
         if name not in self.assets:return None
         image,roi=self.assets[name]
         found=find_matches(frame,image,[1],.92,roi)
+        if name=='return_city' and not found and 'return_city_1600' in self.assets:
+            # The standard 1600px UI uses another rendering of the same label.
+            # Keep the old threshold; verify this real-pixel variant separately.
+            image,roi=self.assets['return_city_1600']
+            found=find_matches(frame,image,[1],.96,roi)
         return found[0] if len(found)==1 else None
 
     def observe(self,frame):
@@ -70,6 +76,8 @@ class VisualNavigator:
         deadline=time.monotonic()+max(8,bot.timeout*3)
         actions=0;last_action=None;last_at=0
         reset_pending=reset
+        waiting_for_city=False
+        reset_completed=False
         while time.monotonic()<deadline:
             bot.check_stop()
             frame=bot.session.capture()
@@ -78,18 +86,25 @@ class VisualNavigator:
                 generation=current_generation;previous=None
             page=self.observe(frame)
             if page.name=='世界地图' and reset_pending:
-                home=self.match('return_city',frame)
-                if home:page=Page('世界地图','回城重置',home.center)
-                else:reset_pending=False  # Already a confirmed world screen.
+                if waiting_for_city:
+                    page=Page('等待回城完成')
+                else:
+                    home=self.match('return_city',frame)
+                    page=(Page('世界地图','回城重置',home.center) if home else
+                          Page('等待识别回城按钮'))
             key=(page.name,page.action,page.point)
             stable=(previous and previous[:2]==key[:2] and
                     ((previous[2] is None and key[2] is None) or
                      (previous[2] is not None and key[2] is not None and
                       max(abs(a-b) for a,b in zip(previous[2],key[2]))<=4)))
             if stable:
+                if page.name=='城内' and (reset_pending or waiting_for_city):
+                    reset_pending=False
+                    waiting_for_city=False
+                    reset_completed=True
                 if page.name=='世界地图' and not page.action:
                     bot.log('页面确认：世界地图，继续检查队伍')
-                    return
+                    return reset_completed
                 if page.point and page.action:
                     # A slow transition must not toggle city/world repeatedly.
                     if last_action==key and time.monotonic()-last_at<2:
@@ -103,10 +118,14 @@ class VisualNavigator:
                     except WindowChanged:previous=None;continue
                     bot.log(f'页面恢复：{page.name} → {page.action}，位置={page.point}')
                     bot.emit('recovery',page=page.name,action=page.action)
-                    if page.action=='回城重置':reset_pending=False
+                    if page.action=='回城重置':
+                        reset_pending=True
+                        waiting_for_city=True
                     actions+=1;last_action=key;last_at=time.monotonic()
                     previous=None;bot.sleep(.4);continue
             previous=key
             bot.sleep(.2)
         bot.emit('diagnostic',frame=frame,name='page_recovery',match=None,threshold=0)
+        if reset and not reset_completed:
+            raise PageUnavailable('回城重置尚未完成：未确认进入城内，不计为已恢复；未重复派队，请查看诊断截图')
         raise PageUnavailable('页面恢复未成功：已等待并尝试已确认的返回路径，请关闭未知弹窗后重试')

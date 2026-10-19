@@ -547,6 +547,11 @@ class HelperApp:
 
 
 def main():
+    if '--recovery-smoke-test' in sys.argv:
+        from recovery_smoke import run
+        index=sys.argv.index('--recovery-smoke-test')
+        model,screenshots,output=sys.argv[index+1:index+4]
+        raise SystemExit(run(RESOURCE_ROOT,model,screenshots,output))
     root = tk.Tk()
     app = HelperApp(root)
     if "--yolo-smoke-test" in sys.argv:
