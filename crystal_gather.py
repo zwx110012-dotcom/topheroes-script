@@ -11,7 +11,7 @@ import cv2
 import numpy as np
 import yaml
 
-from top_heroes import (Match, WorkflowError, WindowChanged, client_box, click,
+from top_heroes import (Match, WorkflowError, WindowChanged, WindowUnavailable, client_box, click,
                         find_game_window as find_window, load_template, screenshot, resize_client, require_foreground, park_mouse)
 from queue_monitor import QueueReader, QueueRow, next_check_seconds
 
@@ -128,6 +128,12 @@ def read_gather_config(path: Path) -> dict[str, Any]:
         raise WorkflowError("continuous 必须为 true 或 false")
     if type(config.get('chat_invites',False)) is not bool:
         raise WorkflowError('chat_invites 必须为 true 或 false')
+    if type(config.get('auto_reconnect',True)) is not bool:
+        raise WorkflowError('auto_reconnect 必须为 true 或 false')
+    rescue = config.get('rescue_timeout_seconds', 300)
+    if type(rescue) not in (int, float) or not 60 <= rescue <= 1800:
+        raise WorkflowError('rescue_timeout_seconds 必须在60到1800秒之间')
+    config['rescue_timeout_seconds'] = rescue
     for key, default, lower, upper in [("monitor_max_seconds", 30, 1, 60),
                                        ("monitor_fallback_seconds", 2, 0.5, 10)]:
         value = float(config.get(key, default))
@@ -147,17 +153,54 @@ def available_levels(base: Path) -> list[int]:
 
 
 class GameSession:
+    allow_steam_restart = True
+
     def __init__(self, title: str, on_frame: Callable | None = None,
                  target_size: tuple[int, int] = (1600, 900),
                  stop_event: threading.Event | None = None,
-                 logger: Callable[[str], None] | None = None):
-        self.hwnd = find_window(title)
+                 logger: Callable[[str], None] | None = None,
+                 defer_ready: bool = False):
+        self.hwnd = None
+        self.title = title
         self.on_frame = on_frame
         self.size = tuple(target_size)
         self.stop_event, self.logger = stop_event, logger
         self.generation = 0
         self.capture_box = None
-        self.ensure_size()
+        if not defer_ready:
+            self.rebind()
+            self.ensure_size()
+
+    def rescue_focus(self):
+        from rescue_game import unique_game
+        with unique_game() as game:
+            game.focus(self.check_stop)
+            self.rebind()
+            self.capture_box = None
+            self.generation += 1
+
+    def foreground_state(self):
+        import win32gui
+        if self.hwnd is None or not win32gui.IsWindow(self.hwnd):
+            try:
+                self.rebind()
+            except WindowUnavailable:
+                return 'missing'
+        if win32gui.IsIconic(self.hwnd) or win32gui.GetForegroundWindow() != self.hwnd:
+            return 'away'
+        return 'front'
+
+    def check_stop(self):
+        if self.stop_event and self.stop_event.is_set():
+            raise RunStopped('已停止；取消窗口救援')
+
+    def rebind(self):
+        """Reacquire a uniquely identified game window after a reconnect."""
+        hwnd = find_window(self.title)
+        if hwnd != self.hwnd:
+            self.hwnd = hwnd
+            self.generation += 1
+            self.capture_box = None
 
     def sleep(self, seconds: float) -> None:
         if self.stop_event:
@@ -169,6 +212,8 @@ class GameSession:
     def ensure_size(self) -> bool:
         if self.stop_event and self.stop_event.is_set():
             raise RunStopped("已停止；取消窗口恢复")
+        if self.hwnd is None:
+            self.rebind()
         require_foreground(self.hwnd)
         box = client_box(self.hwnd)
         current = (box[2] - box[0], box[3] - box[1])
@@ -193,7 +238,7 @@ class GameSession:
                 if self.logger:
                     self.logger("窗口已恢复并稳定；使用新截图继续识别")
                 return True
-        raise WorkflowError("窗口连续改变或拒绝指定尺寸，已停止点击")
+        raise WindowUnavailable("窗口连续改变或拒绝指定尺寸，已停止点击")
 
     def capture(self) -> np.ndarray:
         for _ in range(3):
@@ -210,7 +255,7 @@ class GameSession:
                 self.capture_box = after
                 break
         else:
-            raise WorkflowError("截图期间窗口持续改变，已停止点击")
+            raise WindowUnavailable("截图期间窗口持续改变，已停止点击")
         if self.on_frame:
             self.on_frame(frame)
         return frame
@@ -253,18 +298,177 @@ class CrystalGatherer:
             from yolo_detector import YoloDetector
             self.detector = YoloDetector(Path(config["yolo_model"]), config.get("yolo_confidence", 0.65))
             self.log(f"识别模型：{self.detector.path.name}（ONNX / CPU）")
+        self.connection_recovery = None
+        self._departure_pending = None
+        if config.get('auto_reconnect', True):
+            from connection_recovery import ConnectionRecovery, GuardedSession
+            self.connection_recovery = ConnectionRecovery(base, session)
+            self.session = GuardedSession(session, self.connection_recovery.dialog)
+
+    def run_resilient(self, continuous=True):
+        from connection_recovery import Disconnected
+        from visual_navigation import PageUnavailable
+        from pywintypes import error as Win32Error
+        from rescue_watchdog import ProgressWatchdog, RescueController, RescueDue
+        raw = self.connection_recovery.raw if self.connection_recovery else self.session
+        self.rescue_watchdog = ProgressWatchdog(self.config.get('rescue_timeout_seconds', 300))
+        if isinstance(raw, GameSession):
+            from foreground_keeper import ForegroundKeeper
+            self.foreground_keeper = ForegroundKeeper(raw)
+        controller = RescueController(raw)
+        reconnected_rows = None
+        last_wait_log = float('-inf')
+        while True:
+            try:
+                self.check_stop()
+                if reconnected_rows is not None and self._departure_pending is not None:
+                    if not self.reconcile_reconnected_departure(reconnected_rows):
+                        self.log('重连后上次出发结果仍不明确；继续复查，不重复点击出发。F8可停止。')
+                        self.sleep(5)
+                        try:
+                            reconnected_rows = self.stable_queues()
+                        except QueueUnavailable:
+                            pass
+                        continue
+                reconnected_rows = None
+                if not continuous and self._departure_pending is not None:
+                    old_idle, idle_rows = self._departure_pending
+                    self.confirm_departure(old_idle, idle_rows)
+                    self._departure_pending = None
+                    self.completed += 1
+                    self.note_progress()
+                rebind = getattr(raw, 'rebind', None)
+                if callable(rebind):
+                    rebind()
+                return self.run_continuous() if continuous else self.run()
+            except Disconnected:
+                if self.connection_recovery is None:
+                    raise
+                # Keep recovery inside this try loop too: its foreground/loading
+                # wait must reach the same progress deadline and rescue handler.
+                try:
+                    reconnected_rows = self.connection_recovery.recover(self)
+                    self.note_progress()
+                except RescueDue:
+                    reconnected_rows = self.rescue_after_timeout(controller)
+                except WindowChanged:
+                    continue
+            except RescueDue:
+                reconnected_rows = self.rescue_after_timeout(controller)
+            except WindowChanged:
+                # Thirty-second foreground takeover invalidates partial frames,
+                # but does not clear departure records or reset the 5min timer.
+                continue
+            except (WindowUnavailable, Win32Error, PageUnavailable, QueueUnavailable,
+                    TemplateTimeout, DepartureUncertain) as error:
+                if time.monotonic()-last_wait_log >= 30:
+                    keeper = getattr(self, 'foreground_keeper', None)
+                    wait_rule = ('离开前台连续30秒后自动切回' if keeper and keeper.away_since is not None
+                                 else '连续5分钟无进展后救援')
+                    self.log(f'采集暂未恢复：{error}；保留任务，{wait_rule}，F8可停止。')
+                    last_wait_log = time.monotonic()
+                # Sleep without checking the watchdog here; the next iteration
+                # catches its deadline in the same try rather than escaping.
+                self.rescue_watchdog.suspended = True
+                try:
+                    self.sleep(2)
+                except WindowChanged:
+                    pass
+                finally:
+                    self.rescue_watchdog.suspended = False
+
+    def note_progress(self):
+        watchdog = getattr(self, 'rescue_watchdog', None)
+        if watchdog is not None:
+            watchdog.progress()
+
+    def rescue_after_timeout(self, controller):
+        from visual_navigation import PageUnavailable
+        from pywintypes import error as Win32Error
+        from connection_recovery import Disconnected
+        self.rescue_watchdog.suspended = True
+        try:
+            try:
+                rows = controller.recover(self)
+            except (WindowUnavailable, Win32Error, PageUnavailable, QueueUnavailable,
+                    TemplateTimeout, Disconnected) as error:
+                self.log(f'救援暂未成功：{error}；保留原任务，5分钟后再次复查，F8可停止。')
+                self.sleep(self.rescue_watchdog.seconds)
+                return None
+            self.note_progress()
+            return rows
+        except WindowChanged:
+            return None  # Foreground takeover: resume with fresh observations.
+        finally:
+            self.rescue_watchdog.suspended = False
+
+    def reconcile_reconnected_departure(self, rows):
+        if self._departure_pending is None:
+            return True
+        old_idle, idle_rows = self._departure_pending
+        if (len(rows) != self.capacity or {row.number for row in rows} != set(range(1,self.capacity+1))
+                or any(row.state == 'unknown' for row in rows)):
+            return False
+        if idle_rows is None:
+            accepted = sum(row.state == 'idle' for row in rows) == old_idle-1
+            if all(row.state == 'idle' for row in rows):
+                self._departure_pending = None
+                self.note_progress()
+                self.log('恢复后全部队伍为空闲；取消旧出发待确认，按当前队伍重新采集。')
+                return True
+        else:
+            previous = [row for row in rows if row.number in idle_rows]
+            if len(previous) != len(idle_rows):
+                return False
+            newly_busy = [row for row in previous if row.state in ('mining','outbound','busy')
+                          and row.seconds is not None]
+            accepted = len(newly_busy) == 1
+            if all(row.state in ('idle','returning') for row in previous):
+                self._departure_pending = None
+                self.note_progress()
+                self.log('重连后原候选队伍仍为空闲或返程；重新按当前队伍状态决定补队。')
+                return True
+        if not accepted:
+            return False
+        self.completed += 1
+        self._departure_pending = None
+        self.note_progress()
+        self.log(f'重连后已核实上次派队成功；累计派出 {self.completed} 队，不重复出发。')
+        return True
 
     def require_ready(self):
         if self.detector:
             self.detector.require_verified()
             self.detector.require_capacity(self.capacity)
 
-    def check_stop(self) -> None:
+    def check_cancel(self) -> None:
         if self.stop_event and self.stop_event.is_set():
             raise RunStopped("已停止；不会继续点击")
 
+    def check_stop(self) -> None:
+        self.check_cancel()
+        keeper = getattr(self, 'foreground_keeper', None)
+        if keeper is not None:
+            keeper.poll(self.check_cancel, self.require_ready, self.log)
+        watchdog = getattr(self, 'rescue_watchdog', None)
+        if watchdog is not None:
+            watchdog.check()
+
     def sleep(self, seconds: float) -> None:
         self.check_stop()
+        if getattr(self, 'foreground_keeper', None) is not None:
+            # Check focus once per second even during a long mining alarm or a
+            # recovery backoff. Event.wait still makes F8 immediately effective.
+            deadline = time.monotonic()+seconds
+            while True:
+                self.check_stop()
+                remaining = deadline-time.monotonic()
+                if remaining <= 0:
+                    return
+                if self.stop_event:
+                    self.stop_event.wait(min(1, remaining))
+                else:
+                    time.sleep(min(1, remaining))
         if self.stop_event:
             if self.stop_event.wait(seconds):
                 self.check_stop()
@@ -455,20 +659,45 @@ class CrystalGatherer:
     def set_level_six(self) -> None:
         self.set_level(6)
 
-    def open_world_search(self) -> int:
+    def open_world_search(self, continuous: bool = False) -> tuple[int, set[int] | None]:
+        # A one-use handoff from this continuous-loop iteration only. Consume
+        # before any capture: retries, navigation and recovery must read anew.
+        snapshot = getattr(self, '_search_queue_snapshot', None)
+        self._search_queue_snapshot = None
         if not self.matches("search_icon"):
+            snapshot = None
             self.ensure_world()
-        self.wait("search_icon")
-        count = self.stable_idle_count()
+        # Read the latest queues AFTER any navigation. In continuous mode the
+        # full three-frame row check already verifies the idle labels; repeating
+        # three idle-only frames added latency without another state guarantee.
+        idle_rows = None
+        if continuous:
+            if (snapshot is not None
+                    and snapshot[2] == getattr(self.session, 'generation', 0)
+                    and 0 <= time.monotonic() - snapshot[1] <= 5
+                    and len(snapshot[0]) == self.capacity
+                    and {r.number for r in snapshot[0]} == set(range(1, self.capacity + 1))
+                    and all(r.state in ('idle', 'mining', 'outbound', 'returning', 'busy')
+                            and (r.state == 'idle' or r.seconds is not None)
+                            for r in snapshot[0])):
+                rows = snapshot[0]
+            else:
+                rows = self.stable_queues()
+            count = sum(row.state == 'idle' for row in rows)
+            idle_rows = {row.number for row in rows if row.state in ('idle', 'returning')}
+        else:
+            count = self.stable_idle_count()
         self.log(f"搜索前图像确认：空闲 {count}/{self.capacity} 队")
         self.emit("queue", idle=count, capacity=self.capacity)
         if count == 0:
             raise NoIdleQueues("未识别到空闲队列；队列已满或列表被折叠，停止派队")
+        # press() takes two fresh observations and rechecks window geometry.
+        # A separate wait() here would repeat the same two-frame confirmation.
         self.press("search_icon")
         self.press("resources")
         self.press("red_crystal")
         self.set_level(self.config.get('target_level',7))
-        return count
+        return count, idle_rows
 
     def confirm_departure(self, old_idle: int, idle_rows: set[int] | None = None) -> None:
         deadline = time.monotonic() + self.timeout
@@ -492,6 +721,7 @@ class CrystalGatherer:
                 correct = world and len(newly_busy) == 1
             stable = stable + 1 if correct else 0
             if stable >= 2:
+                self._departure_pending = None
                 return
             if time.monotonic() >= deadline:
                 now=time.monotonic()
@@ -504,14 +734,9 @@ class CrystalGatherer:
     def dispatch_one(self, continuous: bool = False) -> None:
         started = time.monotonic()
         for attempt in range(1, 4):
-            idle_rows = None
-            if continuous:
-                # Refresh candidates after every search, as other teams can arrive.
-                rows = self.stable_queues()
-                idle_rows = {r.number for r in rows if r.state in ("idle", "returning")}
-                if not any(r.state == "idle" for r in rows):
-                    raise NoIdleQueues("打开搜索前已经没有空闲队伍；未点击搜索")
-            idle = self.open_world_search()
+            # Every attempt refreshes candidates after navigation; a failed
+            # search never reuses an earlier snapshot to authorize departure.
+            idle, idle_rows = self.open_world_search(continuous=continuous)
             self.press("search_button")
             self.sleep(float(self.config.get("search_wait_seconds", 2)))
             try:
@@ -529,9 +754,13 @@ class CrystalGatherer:
                 self.emit("search_retry", delay=3)
                 self.sleep(3)
         # Once gathering was clicked, no search retry surrounds departure.
+        # Record before press(): its post-click settle wait may detect a
+        # disconnect, foreground loss, F8 or the rescue deadline.
+        self._departure_pending = (idle, idle_rows)
         self.press("depart")
         self.confirm_departure(idle, idle_rows)
         self.completed += 1
+        self.note_progress()
         self.log(f"已确认补队；累计派出 {self.completed} 队；本次耗时 {time.monotonic() - started:.2f} 秒")
 
     def search_retry_allowed(self, failed_frame: np.ndarray) -> bool:
@@ -547,7 +776,7 @@ class CrystalGatherer:
     def run(self) -> None:
         self.require_ready()
         total = int(self.config.get("dispatches", 3))
-        for number in range(1, total + 1):
+        for number in range(self.completed + 1, total + 1):
             self.check_stop()
             self.log(f"准备第 {number}/{total} 队")
             self.emit("progress", completed=self.completed, total=total)
@@ -565,6 +794,7 @@ class CrystalGatherer:
         self.log(f"一个大循环完成：确认派出 {total} 队；本次停止。")
 
     def stable_queues(self) -> list[QueueRow]:
+        self._stable_queue_snapshot = None
         if self.queue_reader is None:
             self.queue_reader = QueueReader(self.base, self.templates["idle"], self.detector, self.capacity)
         deadline = time.monotonic() + self.timeout
@@ -587,6 +817,7 @@ class CrystalGatherer:
             stable = stable + 1 if coherent else (1 if rows else 0)
             if stable >= 3:
                 self.queue_observed_at=captured_at
+                self._stable_queue_snapshot = (rows, captured_at, generation)
                 return rows
             previous = rows
             if time.monotonic() >= deadline:
@@ -600,9 +831,10 @@ class CrystalGatherer:
 
     def run_continuous(self) -> None:
         self.require_ready()
-        if not self.matches('search_icon'):self.ensure_world()
+        self._departure_pending = getattr(self, '_departure_pending', None)
         watcher=None
         if self.config.get('chat_invites',False) and self.capacity==4:
+            if not self.matches('search_icon'):self.ensure_world()
             from chat_invites import ChatWatcher,ChatPageChanged
             watcher=ChatWatcher(self)
             from carriage_quota import CarriageQuota
@@ -619,10 +851,8 @@ class CrystalGatherer:
                 watcher=None
         target = int(self.config.get("dispatches", 3))
         self.log(f"持续采集开启：目标在外 {target} 队；计时归零后等待返程，空闲后补队")
-        if not self.matches("search_icon"):
-            self.ensure_world()
-        self.wait("search_icon")
-        pending=None
+        # The loop below confirms the world page before reading queues. Avoid
+        # another startup-only capture/wait chain before that same check.
         recoveries=0
         queue_failures=0
         queue_resets=0
@@ -659,30 +889,42 @@ class CrystalGatherer:
             busy = self.capacity - idle
             self.emit("queue", idle=idle, capacity=self.capacity)
             self.emit("occupancy", busy=busy, target=target, completed=self.completed)
-            if pending:
+            watchdog = getattr(self, 'rescue_watchdog', None)
+            if watchdog is not None:
+                watchdog.observe(rows, self.capacity, target, self._departure_pending)
+            if self._departure_pending is not None:
+                old_idle, idle_rows = self._departure_pending
                 try:
-                    self.confirm_departure(pending.old_idle,pending.idle_rows)
+                    self.confirm_departure(old_idle,idle_rows)
                 except DepartureUncertain:
                     self.log('尚未确认上次出发结果：保持监测，不重复派队；5秒后复查')
                     self.sleep(5)
                     continue
-                self.completed+=1;pending=None;recoveries=0
+                self._departure_pending = None
+                self.completed+=1;recoveries=0
+                self.note_progress()
                 self.log(f'恢复后已确认上次派队成功；累计派出 {self.completed} 队')
                 continue
             if idle and busy < target:
                 self.log("；".join(r.display() for r in rows))
                 self.log(f"确认存在空闲队伍，立即补充{self.config.get('target_level',7)}级红水晶采集")
                 self.emit("monitor", rows=rows, delay=0, completed=self.completed)
+                # The decision and search use the same freshly verified three
+                # frames, rather than running the identical queue scan twice.
+                # Only the exact returned observation may authorize this handoff.
+                snapshot = getattr(self, '_stable_queue_snapshot', None)
+                self._search_queue_snapshot = (snapshot if snapshot is not None
+                                               and snapshot[0] is rows else None)
                 try:
                     self.dispatch_one(continuous=True)
                     recoveries=0
                 except DepartureUncertain as exc:
-                    pending=exc
+                    self._departure_pending = (exc.old_idle, exc.idle_rows)
                     self.log(f'{exc}；先恢复世界地图，再检查队伍变化')
                     self.ensure_world(reset=True)
                 except TemplateTimeout as exc:
                     recoveries+=1
-                    if recoveries>3:raise WorkflowError('同一派队流程连续恢复3次仍失败，请检查诊断截图') from exc
+                    if recoveries>3:raise
                     self.log(f'{exc}；第{recoveries}/3次恢复页面后重试，重新读取队伍')
                     self.ensure_world(reset=True)
                 except NoIdleQueues:
@@ -699,6 +941,8 @@ class CrystalGatherer:
                     # This type is only raised by queue reads before departure.
                     # A failed post-departure confirmation remains fatal.
                     self.wait_for_queue_retry(exc)
+                finally:
+                    self._search_queue_snapshot = None
                 continue
             delay = next_check_seconds(rows, self.config.get("monitor_max_seconds", 30),
                                        self.config.get("monitor_fallback_seconds", 2))
@@ -768,12 +1012,13 @@ class CrystalGatherer:
 
 def gather(config_path: Path, execute: bool, start_delay: float) -> None:
     config = read_gather_config(config_path)
+    config['auto_reconnect'] = execute and config.get('auto_reconnect', True)
     if start_delay > 0:
         print(f"{start_delay:g} 秒后开始，请把游戏切到前台。", flush=True)
         time.sleep(start_delay)
     session = GameSession(config["window_title"], target_size=tuple(config["window_size"]), logger=print)
     bot = CrystalGatherer(config, config_path.parent, session)
     if execute:
-        bot.run_continuous() if config.get("continuous", True) else bot.run()
+        bot.run_resilient(continuous=config.get("continuous", True))
     else:
         bot.preview()

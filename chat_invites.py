@@ -248,6 +248,13 @@ class ChatWatcher:
         deadline=observed_at+first.seconds-5
         if deadline<=time.monotonic():return 'alarm'
         self.alarm_deadline=deadline;self.alarm_queue=first.number
+        # With the rescue watchdog enabled, revisit the world periodically to
+        # prove the hidden mining timers still move. Chat screenshots alone
+        # cannot establish collection progress or extend the rescue deadline.
+        from rescue_watchdog import ProgressWatchdog
+        watchdog = getattr(self.bot, 'rescue_watchdog', None)
+        queue_recheck_at = (time.monotonic()+min(120, watchdog.seconds/2)
+                            if isinstance(watchdog, ProgressWatchdog) else deadline)
         self.bot.log(f'马车监测闹钟：{first.number}队最先完成采集，{max(0,deadline-time.monotonic()):.1f}秒后退出；期间持续截图监测')
         self.bot.emit('monitor',rows=rows,delay=max(0,deadline-time.monotonic()),
                       observed_at=observed_at,deadline=deadline,completed=self.bot.completed)
@@ -259,6 +266,8 @@ class ChatWatcher:
             generation=getattr(self.bot.session,'generation',0)
             while True:
                 self.check_alarm()
+                if time.monotonic() >= queue_recheck_at:
+                    reason='queue_recheck';break
                 self.poll()
                 if self.quota_dirty:
                     reason='quota';break

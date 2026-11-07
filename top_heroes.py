@@ -30,6 +30,11 @@ class WorkflowError(Exception):
     pass
 
 
+class WindowUnavailable(WorkflowError):
+    """The game window is temporarily absent or cannot safely receive input."""
+    pass
+
+
 class WindowChanged(WorkflowError):
     """Window geometry changed before mouse-down; no click was issued."""
     pass
@@ -82,6 +87,8 @@ def find_game_window(title: str) -> int:
         raise WorkflowError("请选择 Steam Top Heroes 游戏窗口")
     hits = [(hwnd, name) for hwnd, name in game_windows()
             if query in normalized_title(name)]
+    if not hits:
+        raise WindowUnavailable('未找到 Steam Top Heroes 游戏窗口，等待游戏重新打开')
     if len(hits) != 1:
         raise WorkflowError(f"{title!r} 匹配到 {len(hits)} 个 Steam Top Heroes 游戏窗口；请打开游戏并刷新窗口")
     return hits[0][0]
@@ -89,18 +96,18 @@ def find_game_window(title: str) -> int:
 
 def client_box(hwnd: int) -> tuple[int, int, int, int]:
     if win32gui.IsIconic(hwnd):
-        raise WorkflowError("游戏窗口已最小化")
+        raise WindowUnavailable("游戏窗口已最小化")
     left, top, right, bottom = win32gui.GetClientRect(hwnd)
     x1, y1 = win32gui.ClientToScreen(hwnd, (left, top))
     x2, y2 = win32gui.ClientToScreen(hwnd, (right, bottom))
     if x2 <= x1 or y2 <= y1:
-        raise WorkflowError("无法读取游戏窗口客户区")
+        raise WindowUnavailable("无法读取游戏窗口客户区")
     return x1, y1, x2, y2
 
 
 def require_foreground(hwnd: int) -> None:
     if win32gui.GetForegroundWindow() != hwnd:
-        raise WorkflowError("目标窗口不在前台；请先切换到游戏再截图或运行")
+        raise WindowUnavailable("目标窗口不在前台；请先切换到游戏再截图或运行")
 
 
 def resize_client(hwnd: int, size: tuple[int, int]) -> None:

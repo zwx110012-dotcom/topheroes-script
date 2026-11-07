@@ -37,11 +37,14 @@ def linked_queue_model(path: Path) -> Path | None:
     return path.with_name(name)
 
 
-def require_verified_model(path: Path, allow_queue: bool = False, capacity: int | None = None):
+def require_verified_model(path: Path, allow_queue: bool = False, capacity: int | None = None,
+                           _loaded_digests: dict[Path, str] | None = None):
     path = Path(path)
     try:
         info = json.loads(path.with_suffix(".json").read_text(encoding="utf-8"))
         digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        if _loaded_digests is not None and _loaded_digests.get(path) != digest:
+            raise ValueError("当前模型文件已更新，请重新开始以加载新模型")
         if info.get("stage") != "verified" or info.get("sha256") != digest:
             raise ValueError("模型尚未通过独立游戏截图和点击坐标验证")
         if info.get("navigation_roi_version") != 1:
@@ -54,7 +57,8 @@ def require_verified_model(path: Path, allow_queue: bool = False, capacity: int 
         if capacity is not None and not linked and capacity not in info.get('supported_queue_counts',[3]):
             raise ValueError(f'队伍模型尚未验证{capacity}队，请使用配套训练模型')
         if linked:
-            require_verified_model(linked, allow_queue=True, capacity=capacity)
+            require_verified_model(linked, allow_queue=True, capacity=capacity,
+                                   _loaded_digests=_loaded_digests)
     except (OSError, ValueError, KeyError) as exc:
         raise WorkflowError(f"YOLO 当前仅可预览：{exc}。请先补充截图并验证模型") from exc
 
@@ -161,6 +165,9 @@ class YoloDetector:
             import onnxruntime as ort
             options = ort.SessionOptions()
             options.intra_op_num_threads = 4
+            # Button and queue sessions share a four-core CPU. Sleeping idle
+            # workers leaves those cores available to the active model/game.
+            options.add_session_config_entry("session.intra_op.allow_spinning", "0")
             self.session = ort.InferenceSession(str(path), options, providers=["CPUExecutionProvider"])
             inputs = self.session.get_inputs()
             if len(inputs) != 1 or inputs[0].type != "tensor(float)":
@@ -192,15 +199,17 @@ class YoloDetector:
             raise WorkflowError(f'无法加载配套队伍模型：{exc}') from exc
 
     def require_verified(self):
-        # Preview and training models cannot silently authorize mouse input.
-        if hashlib.sha256(self.path.read_bytes()).hexdigest() != self.loaded_sha256:
-            raise WorkflowError("当前模型文件已更新，请重新开始以加载新模型")
-        require_verified_model(self.path, allow_queue=getattr(self,'queue_component',False))
+        # One full hash per file per check verifies BOTH the loaded session and
+        # its manifest. Do not cache hashes across calls: even a same-size edit
+        # with restored timestamps must block the next mouse action.
         queue = getattr(self,'queue_detector',None)
         if linked_queue_model(self.path) != (queue.path if queue else None):
             raise WorkflowError('队伍模型配置已更新，请重新开始')
+        loaded_digests = {self.path: self.loaded_sha256}
         if queue:
-            queue.require_verified()
+            loaded_digests[queue.path] = queue.loaded_sha256
+        require_verified_model(self.path, allow_queue=getattr(self,'queue_component',False),
+                               _loaded_digests=loaded_digests)
 
     def require_capacity(self, capacity: int):
         queue = getattr(self,'queue_detector',None)

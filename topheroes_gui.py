@@ -33,7 +33,7 @@ NAMES = {"world": "进入世界", "search_icon": "打开搜索", "resources": "�
 
 
 class HelperApp:
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, register_hotkey: bool = True):
         self.root = root
         self.events: queue.Queue = queue.Queue()
         self.stop_event = threading.Event()
@@ -42,6 +42,7 @@ class HelperApp:
         self.hotkey_ready = threading.Event()
         self.worker: threading.Thread | None = None
         self.busy = False
+        self.launching_game = False
         self.active_mode = None
         self.countdown_id = None
         self.lines: list[str] = []
@@ -73,7 +74,7 @@ class HelperApp:
         self.monitor_seen = 0.0
         self.monitor_paused_at = None
         self.status_var = tk.StringVar(value="等待开始")
-        self.detail_var = tk.StringVar(value="启动时恢复游戏画面为1600×900，再识别并采集。")
+        self.detail_var = tk.StringVar(value="先点击“启动游戏”，加载完成后再点击“启动采集”。")
         self.size_var = tk.StringVar(value="未连接")
         self.idle_var = tk.StringVar(value="—")
         self.progress_var = tk.StringVar(value=f"0 / {self.count_var.get()}")
@@ -82,7 +83,8 @@ class HelperApp:
         self.add_log("已就绪：游戏状态只从截图识别，动作使用鼠标点击。")
         root.protocol("WM_DELETE_WINDOW", self.close)
         root.after(100, self.drain_events)
-        threading.Thread(target=self.hotkey_loop, daemon=True).start()
+        if register_hotkey:
+            threading.Thread(target=self.hotkey_loop, daemon=True).start()
 
     def load_settings(self) -> dict:
         try:
@@ -108,6 +110,52 @@ class HelperApp:
 
     def open_logs(self):
         os.startfile(self.log_path.parent)
+
+    def launch_game(self):
+        if self.busy or self.launching_game or self.closing.is_set():
+            return
+        self.launching_game = True
+        self.stop_event.clear()
+        self.launch_button.configure(state='disabled')
+        self.status_var.set('正在启动游戏')
+        self.detail_var.set('通过 Steam 启动，沿用现有启动选项；不会自动开始采集。')
+        self.add_log('请求通过 Steam 启动 Top Heroes。')
+        def launch():
+            try:
+                from game_launcher import request_launch, game_is_running
+                from steam_restart import SteamRestartGuard
+                from crystal_gather import RunStopped
+                def check_launch_stop():
+                    if self.closing.is_set() or self.stop_event.is_set():
+                        raise RunStopped('已停止启动游戏，不再关闭弹窗或重试。')
+                guard = SteamRestartGuard(lambda text:self.events.put(('log',text)))
+                guard.poll(check_launch_stop)
+                if not guard.pending and not request_launch():
+                    result = (True,'游戏已经运行，无需重复启动。')
+                else:
+                    deadline = time.monotonic()+60
+                    result = (False,'启动请求已发送，但暂未检测到游戏，请查看 Steam 启动结果。')
+                    while not self.closing.wait(1) and time.monotonic()<deadline:
+                        check_launch_stop()
+                        guard.poll(check_launch_stop)
+                        if game_is_running():
+                            result = (True,'游戏已启动；加载完成后可点击“启动采集”。')
+                            break
+                if not self.closing.is_set():
+                    self.events.put(('game_launch_done',result))
+            except Exception as exc:
+                if not self.closing.is_set():
+                    self.events.put(('game_launch_done',(False,str(exc))))
+        threading.Thread(target=launch,daemon=True).start()
+
+    def finish_game_launch(self, ok, message):
+        self.launching_game = False
+        self.launch_button.configure(state='disabled' if self.busy else 'normal')
+        self.add_log(message)
+        if not self.busy:
+            self.status_var.set('游戏已运行' if ok else '请检查游戏启动结果')
+            self.detail_var.set(message)
+            self.refresh_windows()
 
     def add_log(self, message: str):
         line = f"[{time.strftime('%H:%M:%S')}] {message}"
@@ -150,8 +198,10 @@ class HelperApp:
         if busy:
             self.monitor_paused_at = None
         for button in (self.start_button, self.preview_button, self.refresh_button,
-                       self.capture_button, self.image_button, self.model_button):
+                       self.capture_button, self.image_button, self.model_button, self.launch_button):
             button.configure(state="disabled" if busy else "normal")
+        if self.launching_game:
+            self.launch_button.configure(state='disabled')
         self.stop_button.configure(state="normal" if busy else "disabled")
         for widget in (self.window_combo, self.capacity_spin, self.count_spin, self.delay_spin, self.recognition_combo,self.level_combo):
             widget.configure(state="disabled" if busy else "readonly")
@@ -206,7 +256,7 @@ class HelperApp:
                         return frame
                     def click(self, point):
                         raise WorkflowError("截图预览不能点击")
-                bot = CrystalGatherer(config, RESOURCE_ROOT, ImageSession(), self.stop_event,
+                bot = CrystalGatherer(dict(config, auto_reconnect=False), RESOURCE_ROOT, ImageSession(), self.stop_event,
                     lambda msg: self.events.put(("log", msg)),
                     lambda kind, data: self.events.put((kind, data)))
                 bot.preview()
@@ -300,7 +350,8 @@ class HelperApp:
                 raise RunStopped("已停止")
             session = GameSession(config["window_title"], self.frame_event,
                                   target_size=tuple(config["window_size"]), stop_event=self.stop_event,
-                                  logger=lambda message: self.events.put(("log", message)))
+                                  logger=lambda message: self.events.put(("log", message)),
+                                  defer_ready=(mode == 'run'))
             if mode == "capture":
                 frame = session.capture()
                 folder = DATA_ROOT / "captures"
@@ -313,13 +364,14 @@ class HelperApp:
                 self.events.put(("frame", frame))
                 self.events.put(("done", ("success", f"训练截图已保存：{path}")))
                 return
+            config = dict(config, auto_reconnect=(mode == 'run' and config.get('auto_reconnect', True)))
             bot = CrystalGatherer(config, RESOURCE_ROOT, session, self.stop_event,
                                   lambda message: self.events.put(("log", message)),
                                   lambda kind, data: self.events.put((kind, data)))
             self.events.put(("size", session.size))
             if mode == "run":
                 bot.require_ready()
-                bot.run_continuous() if config["continuous"] else bot.run()
+                bot.run_resilient(continuous=config["continuous"])
                 result = f"本次完成，已确认派出 {bot.completed} 队。"
             else:
                 bot.preview()
@@ -408,6 +460,8 @@ class HelperApp:
                 kind, data = self.events.get_nowait()
                 if kind == "log":
                     self.add_log(data)
+                elif kind == 'game_launch_done':
+                    self.finish_game_launch(*data)
                 elif kind == "frame":
                     self.draw_frame(data)
                 elif kind == "size":
@@ -547,13 +601,36 @@ class HelperApp:
 
 
 def main():
+    if '--foreground-live-test' in sys.argv:
+        from rescue_smoke import live_foreground
+        index = sys.argv.index('--foreground-live-test')
+        raise SystemExit(live_foreground(*sys.argv[index+1:index+3]))
+    if '--rescue-smoke-test' in sys.argv:
+        from rescue_smoke import run
+        raise SystemExit(run(sys.argv[sys.argv.index('--rescue-smoke-test')+1]))
+    if '--steam-restart-smoke-test' in sys.argv:
+        from steam_restart_smoke import run
+        raise SystemExit(run(sys.argv[sys.argv.index('--steam-restart-smoke-test')+1]))
+    if '--connection-smoke-test' in sys.argv:
+        from connection_smoke import run
+        index=sys.argv.index('--connection-smoke-test')
+        screenshots,output=sys.argv[index+1:index+3]
+        raise SystemExit(run(RESOURCE_ROOT,screenshots,output))
     if '--recovery-smoke-test' in sys.argv:
         from recovery_smoke import run
         index=sys.argv.index('--recovery-smoke-test')
         model,screenshots,output=sys.argv[index+1:index+4]
         raise SystemExit(run(RESOURCE_ROOT,model,screenshots,output))
     root = tk.Tk()
-    app = HelperApp(root)
+    layout_preview = '--ui-preview' in sys.argv
+    app = HelperApp(root, register_hotkey=not layout_preview)
+    if layout_preview:
+        from ui_preview import run
+        output=Path(sys.argv[sys.argv.index('--ui-preview')+1])
+        def preview_ui():
+            try: run(app,output)
+            finally: app.close()
+        root.after(500,preview_ui)
     if "--yolo-smoke-test" in sys.argv:
         index = sys.argv.index("--yolo-smoke-test")
         model, source, output = map(Path, sys.argv[index + 1:index + 4])

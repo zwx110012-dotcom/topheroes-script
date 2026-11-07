@@ -25,7 +25,7 @@ def check_layout(app):
                 for view_page in (0, 1):
                     app.view_tabs.select(view_page)
                     root.update()
-                    for widget in (app.start_button, app.stop_button, app.hotkey_label):
+                    for widget in (app.start_button, app.stop_button, app.launch_button, app.hotkey_label):
                         inside(widget)
                     if settings_page == 0:
                         for widget in (app.level_combo, app.capacity_spin, app.count_spin, app.chat_check, app.delay_spin):
@@ -52,6 +52,7 @@ def check_layout(app):
         assert str(app.level_combo.cget('state')) == 'disabled'
         assert str(app.chat_check.cget('state')) == 'disabled'
         assert str(app.stop_button.cget('state')) == 'normal'
+        assert str(app.launch_button.cget('state')) == 'disabled'
         app.monitor_paused_at = app.monitor_seen + 10
         app.set_busy(False)
         app.refresh_queue_cards()

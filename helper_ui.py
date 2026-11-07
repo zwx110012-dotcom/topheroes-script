@@ -202,6 +202,8 @@ def build_ui(app, resource_root):
     app.stop_button = app.button(footer, '停止  F8', app.stop)
     app.stop_button.configure(fg='#ffb2b2', state='disabled')
     app.stop_button.pack(side='right', padx=(16, 0))
+    app.launch_button = app.button(footer, '启动游戏', app.launch_game)
+    app.launch_button.pack(side='right', padx=(16, 0))
     app.hotkey_label = label(footer, 'F8 随时停止 · 切换离开游戏会停止', size=9, color=MUTED)
     app.hotkey_label.pack(side='left')
     app.button(footer, '日志目录', app.open_logs).pack(side='left', padx=(16, 6))
