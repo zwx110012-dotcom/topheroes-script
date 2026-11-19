@@ -1,0 +1,14 @@
+[
+  {
+    "originalHash": "9A2EB0048E7C4F3FF13454FC68432AE5D31B5851D2D354E262AB85AD43D95599",
+    "target": "D:\\Games\\TopHeroes_Steam\\TopHeroes_Steam_Data\\StreamingAssets\\Assemblies\\ScriptThirdParty.mdl",
+    "name": "ScriptThirdParty",
+    "patchHash": "A8915CE27C7B517FECF5A3C006C9CA1C20FC469E6DB8928DFFA9661453F57131"
+  },
+  {
+    "originalHash": "8814F6DE01AC3514DA4C447847D05079C72225740C1D907C7B6571B3D8285368",
+    "target": "D:\\Games\\TopHeroes_Steam\\TopHeroes_Steam_Data\\StreamingAssets\\Assemblies\\ScriptProj.mdl",
+    "name": "ScriptProj",
+    "patchHash": "7D878ED5A71CB1C0F8A059414630E9F4C4DDD205C14DFFE69588BFCAC2D21D7E"
+  }
+]

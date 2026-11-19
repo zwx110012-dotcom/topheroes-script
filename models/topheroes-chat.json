@@ -1,0 +1,12 @@
+{
+  "stage": "verified",
+  "sha256": "d9daa9dff54438b40497efffb7f8458a58260305bd868503d726c44694ca1e13",
+  "base_model": "best.pt",
+  "note": "Join button verified on held-out user crop and synthetic full-client placement; red-card semantics require reviewed pixel templates. Live joined result not yet verified. Other classes are not deployed.",
+  "navigation_roi_version": 1,
+  "role": "chat",
+  "validated_classes": [
+    "merchant_join"
+  ],
+  "verification": "yolo-output/merchant-verification.json; yolo-output/chat-card-verification.json"
+}

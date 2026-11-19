@@ -5,8 +5,6 @@ __pycache__/
 .venv-yolo/
 datasets/
 models/*.pt
-models/*.onnx
-models/*.json
 models/*.sha256
 models/before-four-queues/
 runs/
@@ -17,3 +15,14 @@ debug/
 build/
 dist/
 *.spec
+
+.pytest_cache/
+*.log
+*.mdl
+proxy/*.dll
+proxy/*.exe
+proxy/decoded-deps/
+proxy/manifest.json
+proxy/relay-ready.json
+proxy/tests/隔离测试/
+proxy/tests/隔离恢复测试.json

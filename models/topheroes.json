@@ -1,0 +1,28 @@
+{
+  "stage": "verified",
+  "sha256": "0b9338603cb48c36d4ad14e63c505aab55bc657c1c4255f3b4859cac0b4537fc",
+  "base_model": "best.pt",
+  "note": "Four-queue model, screenshot-only inference, no game memory. Held-out validation passed; normal live dispatch test follows.",
+  "navigation_roi_version": 1,
+  "supported_queue_counts": [
+    3,
+    4
+  ],
+  "regression_tests": 66,
+  "verified_scope": "3/4 queue parsing, held-out controls and navigation; real 4 confirmed dispatches and repeated four-row mining countdowns",
+  "validation": {
+    "images": 9,
+    "boxes": 46,
+    "missed": 0,
+    "extra": 0
+  },
+  "role": "buttons",
+  "queue_model": "topheroes-queue.onnx",
+  "live_four_queues": {
+    "log": "20261014-175555.log",
+    "confirmed_dispatches": 4,
+    "monitor_max_seconds": 30,
+    "natural_four_queue_return_cycle_verified": false,
+    "continuous_running_after_test": true
+  }
+}
